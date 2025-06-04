@@ -1,5 +1,5 @@
 DIRNAME := $(shell basename $(CURDIR))
-CHARMFILE := microcluster-token-distributor_ubuntu-22.04-amd64.charm
+CHARMFILE := microcluster-token-distributor_amd64.charm
 
 build: $(CHARMFILE)
 

@@ -25,13 +25,18 @@ description: |
 
 
 # (Required for 'charm' type)
-bases:
-  - build-on:
-    - name: ubuntu
-      channel: "24.04"
-    run-on:
-    - name: ubuntu
-      channel: "24.04"
+base: ubuntu@24.04
+platforms:
+  amd64:
+    build-on: [amd64]
+    build-for: [amd64]
+
+parts:
+  charm:
+    build-packages:
+      - git
+      - python3-dev
+
 
 config:
   options:
