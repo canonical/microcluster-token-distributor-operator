@@ -26,6 +26,8 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - name: pack
         id: pack
         uses: canonical/craft-actions/charmcraft/pack@main
