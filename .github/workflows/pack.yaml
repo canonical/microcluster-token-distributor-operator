@@ -26,6 +26,8 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - name: pack
         id: pack
         uses: canonical/craft-actions/charmcraft/pack@main
@@ -36,4 +38,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.name }}
-          path: "*.charm"
+          path: ${{ inputs.path || github.workspace }}/*.charm
