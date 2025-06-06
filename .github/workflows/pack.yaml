@@ -1,0 +1,39 @@
+name: pack
+
+on:
+  workflow_call:
+    inputs:
+      name:
+        description: Unique per workflow name to use for artefact.
+        required: true
+        type: string
+      path:
+        required: false
+        type: string
+      verbosity:
+        required: false
+        type: string
+    outputs:
+      charms:
+        description: Name of charm artifacts.
+        value: ${{ jobs.pack.outputs.charms }}
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    outputs:
+      charms: ${{ steps.pack.outputs.charms }}
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: pack
+        id: pack
+        uses: canonical/craft-actions/charmcraft/pack@main
+        with:
+          path: ${{ inputs.path }}
+          verbosity: ${{ inputs.verbosity || 'verbose' }}
+      - name: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.name }}
+          path: "*.charm"
