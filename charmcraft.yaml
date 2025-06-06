@@ -1,30 +1,7 @@
-# This file configures Charmcraft.
-# See https://juju.is/docs/sdk/charmcraft-config for guidance.
-
-# (Required)
-name: microcluster-token-distributor
-
-
-# (Required)
 type: charm
 
-
-# (Recommended)
 title: Microcluster Token Distrbutor Charm
 
-
-# (Required)
-summary: A distributon method for microocluster tokens
-
-
-# (Required)
-description: |
-  A mirror to allow microcluster charms to distribute join tokens without using
-  the peer relation. This was created for the microovn charm but it should be
-  able to be used on any microcluster.
-
-
-# (Required for 'charm' type)
 base: ubuntu@24.04
 platforms:
   amd64:
@@ -36,7 +13,6 @@ parts:
     build-packages:
       - git
       - python3-dev
-
 
 config:
   options:
