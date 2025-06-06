@@ -1,0 +1,19 @@
+name: microcluster-token-distributor
+summary: A distributon method for microocluster tokens
+description: |
+  A mirror to allow microcluster charms to distribute join tokens without using
+  the peer relation. This was created for the microovn charm but it should be
+  able to be used on any microcluster.
+
+maintainers:
+  - OVN Engineering <ubuntu-ovn-eng@lists.launchpad.net>
+
+base: ubuntu@24.04
+
+peers:
+  cluster:
+    interface: worker-cluster
+
+provides:
+  microcluster-cluster:
+    interface: worker-cluster
