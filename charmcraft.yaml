@@ -10,9 +10,15 @@ platforms:
 
 parts:
   charm:
+    source: .
+    plugin: uv
     build-packages:
       - git
-      - python3-dev
+    build-snaps:
+      - astral-uv
+    override-build: |
+      craftctl default
+      git describe --always > $CRAFT_PART_INSTALL/version
 
 config:
   options:

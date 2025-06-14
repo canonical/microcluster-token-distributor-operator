@@ -1,0 +1,13 @@
+/venv
+.venv
+*.py[cod]
+*.charm
+*.swp
+.flake8
+tests
+tox.ini
+.ruff_cache
+.tox
+CONTRIBUTING.md
+INTEGRATING.md
+RELEASE.md
