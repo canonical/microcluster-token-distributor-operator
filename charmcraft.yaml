@@ -18,7 +18,7 @@ parts:
       - astral-uv
     override-build: |
       craftctl default
-      git describe --always > $CRAFT_PART_INSTALL/version
+      git describe --always || echo "unknown-$(date -u +%Y%m%d%H%M%S)" > $CRAFT_PART_INSTALL/version
 
 config:
   options:
