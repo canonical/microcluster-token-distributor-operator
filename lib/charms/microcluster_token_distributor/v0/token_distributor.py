@@ -115,7 +115,7 @@ class TokenConsumer(ops.framework.Object):
         )
         return result.returncode, result.stdout
 
-    def __init__(self, charm: ops.CharmBase, relation_name: str, command_name: str):
+    def __init__(self, charm: ops.CharmBase, relation_name: str, command_name: list):
         super().__init__(charm, relation_name)
         self.charm = charm
         self.command_name = command_name
