@@ -67,7 +67,7 @@ class TokenDistributorProvides(ops.framework.Object):
             self.charm.on[self.relation_name].relation_changed, self._on_token_relation_changed
         )
 
-    def __handle_mirror(self, relation):
+    def _handle_mirror(self, relation):
         relation_data = relation.data
         relation_data[self.charm.unit]["mirror"] = "up"
         for unit in relation.units:
@@ -86,13 +86,13 @@ class TokenDistributorProvides(ops.framework.Object):
 
     def _on_token_relation_changed(self, event: ops.RelationChangedEvent):
         if self.charm.unit.is_leader():
-            self.__handle_mirror(event.relation)
+            self._handle_mirror(event.relation)
 
     def _on_leader_elected(self, _: ops.RelationChangedEvent):
         if relation := self.charm.model.get_relation(self.relation_name):
             if self.charm.unit.is_leader():
                 relation.data[self.charm.unit]["mirror"] = "up"
-                self.__handle_mirror(relation)
+                self._handle_mirror(relation)
             elif relation.data[self.charm.unit].get("mirror"):
                 relation.data[self.charm.unit]["mirror"] = "down"
 
