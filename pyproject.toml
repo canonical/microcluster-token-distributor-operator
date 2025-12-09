@@ -1,6 +1,6 @@
 [project]
 name = "microcluster-token-distributor"
-version ="0.0"
+version ="1.0"
 requires-python = ">=3.12"
 dependencies = [
     "ops ~= 2.17",
