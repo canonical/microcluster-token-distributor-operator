@@ -311,7 +311,7 @@ class TokenConsumer(ops.framework.Object):
             self.charm.on[self.relation_name].relation_changed, self._on_cluster_changed
         )
         self.framework.observe(
-            self.charm.on[self.relation_name].relation_created, self._handle_relation_created
+            self.charm.on[self.relation_name].relation_joined, self._handle_relation_joined
         )
 
         def default_return_list():
@@ -424,7 +424,7 @@ class TokenConsumer(ops.framework.Object):
         if self._stored.in_cluster:
             self._handle_mirror(event.relation)
 
-    def _handle_relation_created(self, event: ops.RelationCreatedEvent):
+    def _handle_relation_joined(self, event: ops.RelationJoinedEvent):
         self._add_hostname(event.relation)
         token_in_cluster = self.any_data_exists(event.relation)
 
