@@ -24,7 +24,7 @@ LIBAPI = 0
 
 # Increment this PATCH version before using `charmcraft publish-lib` or reset
 # to 0 if you are raising the major API version
-LIBPATCH = 2
+LIBPATCH = 3
 
 
 logger = logging.getLogger(__name__)
@@ -342,7 +342,7 @@ class TokenConsumer(ops.framework.Object):
         return True
 
     def _handle_mirror(self, relation: ops.Relation) -> bool:
-        self._update_mirror_state(relation.data)
+        self._update_mirror_state(relation)
         if self.__is_communicator_node():
             return self._update_tokens(relation)
 
@@ -364,14 +364,24 @@ class TokenConsumer(ops.framework.Object):
         # return True if there are names and its the lowest name
         return (len(voter_names) > 0) and (get_hostname() == min(voter_names))
 
-    def _update_mirror_state(
-        self, relation_data: dict[ops.Unit | ops.Application, dict[str, str]]
-    ):
+    def _update_mirror_state(self, relation: ops.Relation):
         logger.info("updating mirror status")
         if self.__is_communicator_node():
-            relation_data[self.charm.unit]["mirror"] = "up"
-        elif relation_data[self.charm.unit].get("mirror"):
-            relation_data[self.charm.unit]["mirror"] = "down"
+            relation.data[self.charm.unit]["mirror"] = "up"
+        elif relation.data[self.charm.unit].get("mirror"):
+            self._safely_down_mirror(relation)
+
+    def _safely_down_mirror(self, relation: ops.Relation):
+        relation.data[self.charm.unit]["mirror"] = "down"
+        # ensure there is nothing in the mirror that only we have
+        mirror_data = self.get_relevant_mirror_data(relation, keep_empty=True)
+        for k in mirror_data.keys():
+            if (
+                mirror_data[k] == EMPTY_STRING
+                and relation.data[self.charm.unit][self._to_mirror_key(k)] != EMPTY_STRING
+            ):
+                relation.data[self.charm.unit]["mirror"] = "up"
+                break
 
     def _join_with_token(self, token: str) -> bool:
         self.on.prejoin.emit()
