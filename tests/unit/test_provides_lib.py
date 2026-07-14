@@ -234,3 +234,18 @@ def test_on_token_relation_changed(leader):
             token_distributor_handle_mirror.assert_called_once()
         else:
             token_distributor_handle_mirror.assert_not_called()
+
+
+def test_on_leader_elected_multiple_related_apps():
+    # Two microcluster apps related on the same endpoint (e.g. multi-arch
+    # microovn) must not raise TooManyRelatedAppsError; every relation is set up.
+    ctx = testing.Context(charm.TokenDistributor)
+    relation_a = testing.Relation(charm.CONTROL_RELATION, "worker-cluster")
+    relation_b = testing.Relation(charm.CONTROL_RELATION, "worker-cluster")
+    with ctx(
+        ctx.on.leader_elected(),
+        testing.State(relations=[relation_a, relation_b], leader=True),
+    ) as manager:
+        manager.run()
+        for relation in manager.charm.model.relations[charm.CONTROL_RELATION]:
+            assert relation.data[manager.charm.unit]["mirror"] == "up"
