@@ -24,7 +24,7 @@ LIBAPI = 0
 
 # Increment this PATCH version before using `charmcraft publish-lib` or reset
 # to 0 if you are raising the major API version
-LIBPATCH = 3
+LIBPATCH = 4
 
 
 logger = logging.getLogger(__name__)
@@ -111,7 +111,7 @@ class TokenDistributorProvides(ops.framework.Object):
             self._handle_mirror(event.relation)
 
     def _on_leader_elected(self, _: ops.RelationChangedEvent):
-        if relation := self.charm.model.get_relation(self.relation_name):
+        for relation in self.charm.model.relations[self.relation_name]:
             if self.charm.unit.is_leader():
                 relation.data[self.charm.unit]["mirror"] = "up"
                 self._handle_mirror(relation)
