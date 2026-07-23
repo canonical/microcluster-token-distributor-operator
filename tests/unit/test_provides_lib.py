@@ -249,3 +249,84 @@ def test_on_leader_elected_multiple_related_apps():
         manager.run()
         for relation in manager.charm.model.relations[charm.CONTROL_RELATION]:
             assert relation.data[manager.charm.unit]["mirror"] == "up"
+
+
+def test_hostname_bridged_across_relations():
+    """Hostnames must be bridged across all microcluster-cluster relations."""
+    ctx = testing.Context(charm.TokenDistributor)
+    # Relation A: already clustered, one node advertising its hostname.
+    relation_a = testing.Relation(
+        charm.CONTROL_RELATION,
+        "worker-cluster",
+        remote_units_data={0: {"hostname": "node-0", "mirror": "up"}},
+    )
+    # Relation B: DPU microovn, a fresh node advertising its hostname.
+    relation_b = testing.Relation(
+        charm.CONTROL_RELATION,
+        "worker-cluster",
+        remote_units_data={0: {"hostname": "dpu-0"}},
+    )
+    with ctx(
+        ctx.on.start(),
+        testing.State(relations=[relation_a, relation_b], leader=True),
+    ) as manager:
+        relations = manager.charm.model.relations[charm.CONTROL_RELATION]
+        rel_a = next(r for r in relations if r.id == relation_a.id)
+
+        # Handle relation A (as happens when relation A changes).
+        manager.charm.token_distributor._handle_mirror(rel_a)
+
+        databag_a = rel_a.data[manager.charm.unit]
+
+        # Relation A learns about its own node hostname
+        assert databag_a.get("mirror-node-0") == token_lib.EMPTY_STRING
+        # The hostname from relation B is bridged into relation A,
+        # so the communicator can mint its join token.
+        assert databag_a.get("mirror-dpu-0") == token_lib.EMPTY_STRING
+
+
+def test_token_bridged_across_relations():
+    """A token minted on one relation must be visible on every relation.
+
+    Once the communicator node (on relation A) generates a join token for the
+    relation-B hostname, that token must appear in the mirror the relation-B
+    consumer reads, so the DPU node joins the shared cluster.
+    """
+    ctx = testing.Context(charm.TokenDistributor)
+    # Relation A: the communicator node has already minted a token for the
+    # hostname and exposed it (mirrored) on its unit databag.
+    relation_a = testing.Relation(
+        charm.CONTROL_RELATION,
+        "worker-cluster",
+        remote_units_data={
+            0: {
+                "hostname": "node-0",
+                "mirror": "up",
+                "mirror-dpu-0": "join-token-abc",
+                "mirror-node-0": token_lib.EMPTY_STRING,
+            }
+        },
+    )
+    # Relation B: DPU microovn node advertising its hostname, no token yet.
+    relation_b = testing.Relation(
+        charm.CONTROL_RELATION,
+        "worker-cluster",
+        remote_units_data={0: {"hostname": "dpu-0"}},
+    )
+    with ctx(
+        ctx.on.start(),
+        testing.State(relations=[relation_a, relation_b], leader=True),
+    ) as manager:
+        relations = manager.charm.model.relations[charm.CONTROL_RELATION]
+        rel_a = next(r for r in relations if r.id == relation_a.id)
+        rel_b = next(r for r in relations if r.id == relation_b.id)
+
+        # Handle both relations (order should not matter for the end state).
+        manager.charm.token_distributor._handle_mirror(rel_a)
+        manager.charm.token_distributor._handle_mirror(rel_b)
+
+        databag_b = rel_b.data[manager.charm.unit]
+
+        # The join token minted via relation A is visible on relation B, so the
+        # DPU consumer can find and consume it.
+        assert databag_b.get("mirror-dpu-0") == "join-token-abc"
