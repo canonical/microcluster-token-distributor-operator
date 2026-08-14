@@ -1,6 +1,8 @@
 DIRNAME := $(shell basename $(CURDIR))
 CHARMFILE := microcluster-token-distributor_amd64.charm
 LIB := lib/charms/microcluster_token_distributor/v0/token_distributor.py
+PARALLEL ?=
+TESTSUITEFLAGS ?=
 
 build: $(CHARMFILE)
 
@@ -18,6 +20,13 @@ secret:
 		--permission=package-view-releases \
 		--permission=package-view-revisions \
 		--ttl=31536000  # 365 days
+
+check-integration:
+ifeq ($(PARALLEL),)
+	tox -e integration -- $(TESTSUITEFLAGS)
+else
+	tox -e integration -- -n $(PARALLEL) $(TESTSUITEFLAGS)
+endif
 
 clean:
 	charmcraft clean
