@@ -24,7 +24,7 @@ LIBAPI = 0
 
 # Increment this PATCH version before using `charmcraft publish-lib` or reset
 # to 0 if you are raising the major API version
-LIBPATCH = 5
+LIBPATCH = 6
 
 
 logger = logging.getLogger(__name__)
@@ -467,11 +467,20 @@ class TokenConsumer(ops.framework.Object):
             self._handle_mirror(event.relation)
 
     def _handle_relation_joined(self, event: ops.RelationJoinedEvent):
+        if len(self.find_mirrors(event.relation)) == 0:
+            event.defer()
+
         self._add_hostname(event.relation)
         token_in_cluster = self.any_data_exists(event.relation)
 
         # could lead to a deadlock if a unit joins and adds data to the mirror
         # before being in the cluster
+        # a cluster is only bootstrapped under the following conditions
+        # a) there being a microcluster token distributor unit with its mirror up
+        # b) not being already in a cluster
+        # c) being the leader
+        # d) there being no data in the mirror, which due to (a) also means the mirror should be
+        #    handling cross relation data at this point so there is no other clusters existing yet.
         if not self._stored.in_cluster and self.charm.unit.is_leader() and not token_in_cluster:
             self.on.prebootstrap.emit()
             error, _ = self._call_cluster_command("bootstrap", *self.bootstrap_args_func())
