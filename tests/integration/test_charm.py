@@ -2,33 +2,39 @@
 # Copyright 2025 Canonical Ltd.
 # See LICENSE file for licensing details.
 
-import asyncio
 import logging
 from pathlib import Path
 
-import pytest
-import yaml
-from pytest_operator.plugin import OpsTest
+import jubilant
 
 logger = logging.getLogger(__name__)
 
-METADATA = yaml.safe_load(Path("./charmcraft.yaml").read_text())
-APP_NAME = METADATA["name"]
+
+def test_build_and_deploy(juju: jubilant.Juju, charm_path: Path, app_name: str):
+    """Deploy the charm and wait for active/idle status."""
+    juju.deploy(charm_path, app=app_name)
+    juju.wait(jubilant.all_active)
 
 
-@pytest.mark.abort_on_fail
-async def test_build_and_deploy(ops_test: OpsTest):
-    """Build the charm-under-test and deploy it together with related charms.
+def test_token_distributor_multiple_microovn(juju: jubilant.Juju, charm_path: Path, app_name: str):
+    juju.deploy(charm_path, app=app_name)
+    microovns = ["microovn-terezi", "microovn-vriska"]
 
-    Assert on the unit status before any relations/configurations take place.
-    """
-    # Build and deploy charm from local source folder
-    charm = await ops_test.build_charm(".")
+    for microovn in microovns:
+        juju.deploy("microovn", channel="latest/edge", app=microovn)
+        juju.integrate(microovn, app_name)
 
-    # Deploy the charm and wait for active/idle status
-    await asyncio.gather(
-        ops_test.model.deploy(charm, application_name=APP_NAME),
-        ops_test.model.wait_for_idle(
-            apps=[APP_NAME], status="active", raise_on_blocked=True, timeout=1000
-        ),
-    )
+    juju.wait(jubilant.all_active, timeout=600)
+    juju.wait(jubilant.all_agents_idle, timeout=600)
+
+    cluster_output = juju.exec("microovn cluster list --format csv", unit=f"{microovns[0]}/0")
+    assert len(cluster_output.stdout.split("\n")) == 2
+
+    outputs = []
+    i = 0
+    for microovn in microovns:
+        cluster_output = juju.exec("microovn cluster list --format csv", unit=f"{microovn}/0")
+        outputs[i] = "\n".join(sorted(cluster_output.stdout.split("\n")))
+        i += 1
+
+    assert outputs[0] == outputs[1]

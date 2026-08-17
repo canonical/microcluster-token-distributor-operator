@@ -88,23 +88,70 @@ jobs:
     with:
       name: microcluster-token-distributor
 
-  test:
+  setup:
+    name: Setup tests
     runs-on: ubuntu-latest
     needs:
       - pack-charm
+    outputs:
+      matrix: ${{ steps.discover.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo snap install astral-uv --classic
+          uv tool install tox --with tox-uv
+          sudo apt-get update
+          sudo apt-get install -y jq
+      - name: Discover individual tests
+        id: discover
+        run: |
+          tox -e integration -- --version
+          tests=$(tox -e integration -- -qq --collect-only tests/integration/ | grep ::test_ | jq -R -s -c 'split("\n")[:-1]')
+          echo $tests
+          echo "matrix={\"test\":$tests}" >> $GITHUB_OUTPUT
+
+  test:
+    name: Integration test (${{ matrix.test }})
+    runs-on: ubuntu-latest
+    needs:
+      - pack-charm
+      - setup
+    strategy:
+      fail-fast: false
+      matrix:
+        test: ${{ fromJson(needs.setup.outputs.matrix).test }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: microcluster-token-distributor
-      - run: |
-          # NOTE this here to demonstrate use of workflow,
-          #      replace with actual tests.
-          echo ${{ needs.pack.outputs.charms }}
-          for charm in ${{ needs.pack.outputs.charms }}; do
-            mkdir charm
-            pushd charm
-            unzip ../$charm
-            popd
-            rm -rf charm
-          done
+          path: ./charms
+
+      - name: Set charm path
+        run: |
+          CHARM_PATH=$(find ./charms -type f -name "*.charm" -print -quit)
+          echo "TOKEN_DISTRIBUTOR_CHARM_PATH=$CHARM_PATH" >> $GITHUB_ENV
+          echo "Charm path: $CHARM_PATH"
+
+      - name: Install dependencies
+        run: |
+          sudo snap install astral-uv --classic
+          uv tool install tox --with tox-uv
+          sudo snap install concierge --classic
+
+      - name: Prepare Environment
+        run: |
+          cat <<EOF > /tmp/concierge.yaml
+          juju:
+            channel: 3.6/stable
+
+          providers:
+            lxd:
+              enable: true
+              bootstrap: true
+          EOF
+
+          sudo concierge prepare -c /tmp/concierge.yaml
+
+      - name: Run tests
+        run: make check-integration TESTSUITEFLAGS="${{ matrix.test }}"

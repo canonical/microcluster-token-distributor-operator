@@ -24,13 +24,14 @@ LIBAPI = 0
 
 # Increment this PATCH version before using `charmcraft publish-lib` or reset
 # to 0 if you are raising the major API version
-LIBPATCH = 5
+LIBPATCH = 7
 
 
 logger = logging.getLogger(__name__)
 
 MIRROR_PREFIX = "mirror-"
 EMPTY_STRING = "empty"
+BOOTSTRAP_APP_KEY = "bootstrap-app"
 
 
 def mirror_id(hostname):
@@ -152,11 +153,27 @@ class TokenDistributorProvides(ops.framework.Object):
         if self.charm.unit.is_leader():
             self._handle_mirror(event.relation)
 
+    def _handle_bootstrappable_app(self):
+        # if it does not exist, pick first
+        bootstrap_app = ""
+        for relation in self.charm.model.relations[self.relation_name]:
+            if relation.data[self.charm.app].get(BOOTSTRAP_APP_KEY):
+                bootstrap_app = relation.data[self.charm.app].get(BOOTSTRAP_APP_KEY)
+                break
+
+        if bootstrap_app == "":
+            bootstrap_app = self.charm.model.relations[self.relation_name][0].app.name
+
+        # update across relations
+        for relation in self.charm.model.relations[self.relation_name]:
+            relation.data[self.charm.app][BOOTSTRAP_APP_KEY] = bootstrap_app
+
     def _on_leader_elected(self, _: ops.RelationChangedEvent):
         for relation in self.charm.model.relations[self.relation_name]:
             if self.charm.unit.is_leader():
                 relation.data[self.charm.unit]["mirror"] = "up"
                 self._handle_mirror(relation)
+                self._handle_bootstrappable_app()
             elif relation.data[self.charm.unit].get("mirror"):
                 relation.data[self.charm.unit]["mirror"] = "down"
 
@@ -467,12 +484,37 @@ class TokenConsumer(ops.framework.Object):
             self._handle_mirror(event.relation)
 
     def _handle_relation_joined(self, event: ops.RelationJoinedEvent):
+        mirrors = self.find_mirrors(event.relation)
+        if len(mirrors) == 0:
+            event.defer()
+
+        is_bootstrappable_app = False
+        if event.relation.data.get(event.relation.app):
+            if not event.relation.data[event.relation.app].get(BOOTSTRAP_APP_KEY):
+                event.defer()
+            is_bootstrappable_app = (
+                event.relation.data[event.relation.app].get(BOOTSTRAP_APP_KEY)
+                == self.charm.app.name
+            )
+
         self._add_hostname(event.relation)
         token_in_cluster = self.any_data_exists(event.relation)
 
         # could lead to a deadlock if a unit joins and adds data to the mirror
         # before being in the cluster
-        if not self._stored.in_cluster and self.charm.unit.is_leader() and not token_in_cluster:
+        # a cluster is only bootstrapped under the following conditions
+        # a) there being a microcluster token distributor unit with its mirror up
+        # b) not being already in a cluster
+        # c) being the leader
+        # d) there being no data in the mirror, which due to (a) also means the mirror should be
+        #    handling cross relation data at this point so there is no other clusters existing yet.
+        # e) this app being the app mctd has given bootstrap permission to
+        if (
+            not self._stored.in_cluster
+            and self.charm.unit.is_leader()
+            and not token_in_cluster
+            and is_bootstrappable_app
+        ):
             self.on.prebootstrap.emit()
             error, _ = self._call_cluster_command("bootstrap", *self.bootstrap_args_func())
             if error:
