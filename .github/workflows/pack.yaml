@@ -32,7 +32,7 @@ jobs:
         id: pack
         uses: canonical/craft-actions/charmcraft/pack@main
         with:
-          path: ${{ inputs.path }}
+          path: ${{ inputs.path || '.' }}
           verbosity: ${{ inputs.verbosity || 'verbose' }}
       - name: upload
         uses: actions/upload-artifact@v4

@@ -28,11 +28,11 @@ def test_token_distributor_multiple_microovn(juju: jubilant.Juju, charm_path: Pa
     juju.wait(jubilant.all_agents_idle, timeout=600)
 
     cluster_output = juju.exec("microovn cluster list --format csv", unit=f"{microovns[0]}/0")
-    assert len(cluster_output.stdout.split("\n")) == 2
+    assert len(cluster_output.stdout.splitlines()) == 2
 
     outputs = []
     for microovn in microovns:
         cluster_output = juju.exec("microovn cluster list --format csv", unit=f"{microovn}/0")
-        outputs.append("\n".join(sorted(cluster_output.stdout.split("\n"))))
+        outputs.append(sorted(cluster_output.stdout.splitlines()))
 
     assert outputs[0] == outputs[1]
