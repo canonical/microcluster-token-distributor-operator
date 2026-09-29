@@ -1,12 +1,9 @@
 DIRNAME := $(shell basename $(CURDIR))
-CHARMFILE := microcluster-token-distributor_amd64.charm
 LIB := lib/charms/microcluster_token_distributor/v0/token_distributor.py
 PARALLEL ?=
 TESTSUITEFLAGS ?=
 
-build: $(CHARMFILE)
-
-$(CHARMFILE): src/charm.py charmcraft.yaml $(LIB)
+build:
 	charmcraft pack -v
 
 secret:
@@ -30,5 +27,5 @@ endif
 
 clean:
 	charmcraft clean
-	rm $(CHARMFILE) -f
+	rm -f microcluster-token-distributor_*.charm
 	rm -f .charmhub.secret
