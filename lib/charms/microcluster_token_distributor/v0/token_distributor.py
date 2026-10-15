@@ -253,13 +253,26 @@ class TokenConsumer(ops.framework.Object):
     on = TokenConsumerEvents()
     _stored = ops.framework.StoredState()
 
-    def _call_cluster_command(self, *args) -> (int, str):
+    def _call_cluster_command(self, *args) -> tuple[int, str]:
         result = subprocess.run(
             self.command_name + list(args),
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             text=True,
         )
+        if result.returncode:
+            stderr = (result.stderr or "").strip()
+            # Log the operation, never its arguments or stdout (which can contain
+            # tokens). Some CLI errors also echo the supplied join token.
+            if len(args) > 1 and args[0] == "join" and args[1]:
+                stderr = stderr.replace(args[1], "<redacted>")
+            logger.error(
+                "%s %s failed with exit code %s: %s",
+                " ".join(self.command_name),
+                args[0] if args else "",
+                result.returncode,
+                stderr or "No stderr output",
+            )
         return result.returncode, result.stdout
 
     def _to_mirror_key(self, key: str) -> str:
@@ -370,9 +383,7 @@ class TokenConsumer(ops.framework.Object):
                 logger.info("added token for {0}".format(key))
                 new_token = True
             else:
-                logger.info(
-                    "generate token for {0} with code {1} and stdout {2}".format(key, error, token)
-                )
+                logger.error("Failed generating token for %s (exit code %s)", key, error)
 
         return new_token
 
@@ -491,7 +502,9 @@ class TokenConsumer(ops.framework.Object):
 
     def _on_install(self, event: ops.InstallEvent):
         if not self.charm.model.get_relation(self.relation_name):
-            self.charm.unit.status = ops.MaintenanceStatus("Waiting for token distrbutor relation")
+            self.charm.unit.status = ops.MaintenanceStatus(
+                "Waiting for token distributor relation"
+            )
 
     def _on_remove(self, event: ops.RemoveEvent):
         if self._stored.in_cluster:
@@ -507,9 +520,7 @@ class TokenConsumer(ops.framework.Object):
                 successful = self._join_with_token(token)
                 if not successful:
                     self.charm.unit.status = ops.BlockedStatus("Joining cluster failed")
-                    logger.error(
-                        "failed {0} joining cluster with token: {1}".format(get_hostname(), token)
-                    )
+                    logger.error("Failed joining %s to cluster", get_hostname())
                     event.defer()
                     return
             else:

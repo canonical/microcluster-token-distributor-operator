@@ -4,7 +4,7 @@
 """Consumer-side token lifecycle regression tests for LP#2170962."""
 
 from dataclasses import replace
-from subprocess import CompletedProcess
+from subprocess import PIPE, CompletedProcess
 from unittest.mock import patch
 
 import charms.microcluster_token_distributor.v0.token_distributor as token_lib
@@ -135,3 +135,81 @@ def test_handover_with_pending_request(ctx, local_token):
         assert cluster is not None
         manager.charm.consumer._safely_down_mirror(cluster)
         assert cluster.data[manager.charm.unit]["mirror"] == ("up" if local_token else "down")
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("join", "private-join-token"),
+        ("add", "replacement"),
+        ("remove", "replacement"),
+        ("list", "-f", "json"),
+        ("bootstrap",),
+    ],
+)
+@pytest.mark.parametrize("returncode", [0, 1])
+def test_command_diagnostics_exclude_tokens(ctx, caplog, args, returncode):
+    stderr = "Join rejected: private-join-token" if args[0] == "join" else "Cluster unavailable"
+    with (
+        patch.object(token_lib.subprocess, "run") as command,
+        ctx(ctx.on.start(), testing.State()) as manager,
+    ):
+        command.return_value = CompletedProcess(
+            [], returncode, stdout="private-output-token", stderr=stderr
+        )
+        assert manager.charm.consumer._call_cluster_command(*args) == (
+            returncode,
+            "private-output-token",
+        )
+    command.assert_called_once_with(
+        ["microovn", "cluster", *args], stdout=PIPE, stderr=PIPE, text=True
+    )
+    if returncode:
+        assert f"microovn cluster {args[0]} failed with exit code 1" in caplog.text
+        assert ("Join rejected: <redacted>" if args[0] == "join" else stderr) in caplog.text
+    else:
+        assert stderr not in caplog.text
+    assert "private-join-token" not in caplog.text
+    assert "private-output-token" not in caplog.text
+
+
+def test_join_failure_is_blocked_and_deferred_without_logging_token(ctx, caplog):
+    token = "private-join-token"
+    relation = testing.Relation(
+        "cluster",
+        remote_units_data={0: {"mirror": "up", "mirror-replacement:request-id": token}},
+    )
+    with (
+        patch.object(token_lib.subprocess, "run") as command,
+        ctx(
+            ctx.on.relation_changed(relation, remote_unit=0), testing.State(relations=[relation])
+        ) as manager,
+    ):
+        command.return_value = CompletedProcess(
+            [], 1, stdout="", stderr=f"Token rejected: {token}"
+        )
+        manager.charm.consumer._stored.token_request_id = "request-id"
+        state = manager.run()
+    assert state.unit_status == testing.BlockedStatus("Joining cluster failed")
+    assert state.deferred
+    assert "Token rejected: <redacted>" in caplog.text
+    assert "Failed joining replacement to cluster" in caplog.text
+    assert token not in caplog.text
+
+
+def test_generation_failure_does_not_publish_or_log_stdout(ctx, caplog):
+    key = "mirror-replacement:request-id"
+    relation = testing.Relation(
+        "cluster", remote_units_data={0: {"mirror": "up", key: token_lib.EMPTY_STRING}}
+    )
+    with (
+        patch.object(token_lib.subprocess, "run") as command,
+        ctx(ctx.on.start(), testing.State(relations=[relation])) as manager,
+    ):
+        command.return_value = CompletedProcess([], 1, stdout="private-output-token", stderr="")
+        cluster = manager.charm.model.get_relation("cluster")
+        assert cluster is not None
+        assert not manager.charm.consumer._update_tokens(cluster)
+        assert key not in cluster.data[manager.charm.unit]
+    assert "exit code 1: No stderr output" in caplog.text
+    assert "private-output-token" not in caplog.text
