@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+from dataclasses import replace
 from unittest.mock import call, patch
 
 import charms.microcluster_token_distributor.v0.token_distributor as token_lib
@@ -330,3 +331,73 @@ def test_token_bridged_across_relations():
         # The join token minted via relation A is visible on relation B, so the
         # DPU consumer can find and consume it.
         assert databag_b.get("mirror-dpu-0") == "join-token-abc"
+
+
+@pytest.mark.parametrize("event_name", ["relation_changed", "upgrade_charm", "leader_elected"])
+def test_replacement_requests_bridged_despite_stale_tokens(event_name):
+    """Each incarnation gets a fresh request across relations, even with stale caches."""
+    ctx = testing.Context(charm.TokenDistributor)
+    stale = {
+        "mirror": "up",
+        "mirror-replacement": "consumed-legacy-token",
+        "mirror-replacement:removed-request": "consumed-scoped-token",
+    }
+    source = testing.Relation(
+        charm.CONTROL_RELATION,
+        remote_app_name="microovn",
+        remote_units_data={0: stale},
+        local_unit_data=stale,
+    )
+    target = testing.Relation(
+        charm.CONTROL_RELATION, remote_app_name="other-microovn", local_unit_data=stale
+    )
+    state = testing.State(relations=[source, target], leader=True)
+
+    for unit_id in (1, 2):
+        request_id = f"request-{unit_id}"
+        key = f"mirror-replacement:{request_id}"
+        target = replace(
+            target,
+            remote_units_data={
+                unit_id: {"hostname": "replacement", "token-request-id": request_id}
+            },
+        )
+        event = (
+            ctx.on.relation_changed(target, remote_unit=unit_id)
+            if event_name == "relation_changed"
+            else getattr(ctx.on, event_name)()
+        )
+        state = ctx.run(event, replace(state, relations=[source, target]))
+        for relation in state.relations:
+            assert relation.local_unit_data[key] == token_lib.EMPTY_STRING
+            assert relation.local_unit_data["mirror-replacement"] == "consumed-legacy-token"
+
+        source = replace(
+            state.get_relation(source.id),
+            remote_units_data={0: {**source.remote_units_data[0], key: f"fresh-token-{unit_id}"}},
+        )
+        target = state.get_relation(target.id)
+        state = ctx.run(
+            ctx.on.relation_changed(source, remote_unit=0),
+            replace(state, relations=[source, target]),
+        )
+        for relation in state.relations:
+            assert relation.local_unit_data[key] == f"fresh-token-{unit_id}"
+        source = state.get_relation(source.id)
+        target = state.get_relation(target.id)
+
+
+def test_upgrade_non_leader_preserves_mirror():
+    ctx = testing.Context(charm.TokenDistributor)
+    relation = testing.Relation(
+        charm.CONTROL_RELATION,
+        local_unit_data={"mirror": "down"},
+        remote_units_data={0: {"hostname": "replacement", "token-request-id": "new-request"}},
+    )
+    state = ctx.run(ctx.on.upgrade_charm(), testing.State(relations=[relation]))
+    assert state.get_relation(relation.id).local_unit_data == relation.local_unit_data
+
+
+def test_upgrade_without_relations():
+    ctx = testing.Context(charm.TokenDistributor)
+    ctx.run(ctx.on.upgrade_charm(), testing.State(leader=True))
