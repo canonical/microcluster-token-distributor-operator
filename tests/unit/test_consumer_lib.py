@@ -3,6 +3,7 @@
 
 """Consumer-side token lifecycle regression tests for LP#2170962."""
 
+import json
 from dataclasses import replace
 from subprocess import PIPE, CompletedProcess
 from unittest.mock import patch
@@ -11,6 +12,8 @@ import charms.microcluster_token_distributor.v0.token_distributor as token_lib
 import ops
 import pytest
 from ops import testing
+
+from charm import CONTROL_RELATION, TokenDistributor
 
 
 class ConsumerCharm(ops.CharmBase):
@@ -51,6 +54,140 @@ def test_replacements_ignore_cached_tokens(ctx):
             mirror[f"mirror-replacement:{request_id}"] = "consumed-scoped-token"
 
     command.assert_not_called()
+
+
+@pytest.mark.parametrize("cross_app", [False, True])
+def test_replaced_hostname_gets_fresh_token(ctx, cross_app):
+    """Exercise both sides with stale caches and two replacements of one hostname."""
+    distributor = testing.Context(TokenDistributor)
+    stale_data = {
+        "mirror": "up",
+        "mirror-a-voter": "bootstrap-token",
+        "mirror-replacement": "consumed-token",
+    }
+    issued_tokens = []
+    request_ids = []
+    members = json.dumps([{"name": "a-voter", "role": "voter", "status": "ONLINE"}])
+
+    def cluster_command(command, **kwargs):
+        operation, *args = command[2:]
+        if operation == "list":
+            return CompletedProcess(command, 0, stdout=members, stderr="")
+        if operation == "add":
+            assert args == ["replacement"]  # The token must match the real hostname.
+            token = f"fresh-token-{len(issued_tokens)}"
+            issued_tokens.append(token)
+            return CompletedProcess(command, 0, stdout=token + "\n", stderr="")
+        assert operation == "join"
+        assert issued_tokens, "A replacement must request a fresh token before joining"
+        assert args == [issued_tokens[-1]]
+        return CompletedProcess(command, 0, stdout="", stderr="")
+
+    with patch.object(token_lib.subprocess, "run", side_effect=cluster_command) as run:
+        for _ in range(2):
+            # A new unit initially sees the previous incarnation's cached token.
+            joining_relation = testing.Relation(
+                "cluster", remote_app_name="distributor", remote_units_data={0: stale_data}
+            )
+            joining_state = ctx.run(
+                ctx.on.relation_changed(joining_relation, remote_unit=0),
+                testing.State(relations=[joining_relation]),
+            )
+            run.assert_not_called()
+            request_data = joining_state.get_relation(joining_relation.id).local_unit_data
+            request_id = request_data["token-request-id"]
+            assert request_id not in request_ids
+            request_ids.append(request_id)
+            key = f"mirror-replacement:{request_id}"
+
+            # Keep stale tokens on both the distributor and the communicator.
+            provider_relation = testing.Relation(
+                CONTROL_RELATION,
+                remote_app_name="microovn",
+                remote_units_data=(
+                    {0: stale_data, 1: request_data} if not cross_app else {0: stale_data}
+                ),
+                local_unit_data=stale_data,
+            )
+            relations = [provider_relation]
+            target_relation = provider_relation
+            if cross_app:
+                target_relation = testing.Relation(
+                    CONTROL_RELATION,
+                    remote_app_name="other-microovn",
+                    remote_units_data={0: request_data},
+                )
+                relations.append(target_relation)
+            provider_state = distributor.run(
+                distributor.on.relation_changed(
+                    target_relation, remote_unit=0 if cross_app else 1
+                ),
+                testing.State(leader=True, relations=relations),
+            )
+            mirrored = provider_state.get_relation(provider_relation.id).local_unit_data
+            assert mirrored[key] == token_lib.EMPTY_STRING
+
+            # The elected communicator creates a token once for this request.
+            communicator_relation = testing.Relation(
+                "cluster", remote_units_data={0: mirrored}, local_unit_data=stale_data
+            )
+            with (
+                patch.object(token_lib, "get_hostname", return_value="a-voter"),
+                ctx(
+                    ctx.on.relation_changed(communicator_relation, remote_unit=0),
+                    testing.State(
+                        relations=[communicator_relation], unit_status=testing.ActiveStatus()
+                    ),
+                ) as manager,
+            ):
+                manager.charm.consumer._stored.in_cluster = True
+                communicator_state = manager.run()
+            generated = communicator_state.get_relation(communicator_relation.id).local_unit_data
+            assert generated[key] == issued_tokens[-1]
+
+            # A repeated event must not mint another token before mirroring catches up.
+            token_count = len(issued_tokens)
+            with patch.object(token_lib, "get_hostname", return_value="a-voter"):
+                ctx.run(
+                    ctx.on.relation_changed(
+                        communicator_state.get_relation(communicator_relation.id), remote_unit=0
+                    ),
+                    communicator_state,
+                )
+            assert len(issued_tokens) == token_count
+
+            provider_relation = replace(
+                provider_state.get_relation(provider_relation.id),
+                remote_units_data={
+                    **provider_relation.remote_units_data,
+                    0: generated,
+                },
+            )
+            provider_state = distributor.run(
+                distributor.on.relation_changed(provider_relation, remote_unit=0),
+                replace(
+                    provider_state,
+                    relations=[
+                        provider_relation if rel.id == provider_relation.id else rel
+                        for rel in provider_state.relations
+                    ],
+                ),
+            )
+            mirrored = provider_state.get_relation(target_relation.id).local_unit_data
+            assert mirrored[key] == issued_tokens[-1]
+            joining_relation = replace(
+                joining_state.get_relation(joining_relation.id), remote_units_data={0: mirrored}
+            )
+            joined = ctx.run(
+                ctx.on.relation_changed(joining_relation, remote_unit=0),
+                replace(joining_state, relations=[joining_relation]),
+            )
+            assert joined.unit_status == testing.ActiveStatus("Joined cluster")
+            # Removal/reprovisioning clears unit state, but leaves both mirrors stale.
+            stale_data = mirrored
+            run.reset_mock()
+
+    assert len(set(issued_tokens)) == 2
 
 
 @pytest.mark.parametrize("key", ["replacement", "replacement:new-request"])
@@ -117,6 +254,50 @@ def test_upgrade_advertises_request_only_for_unjoined_legacy_unit(ctx, in_cluste
     else:
         assert data["token-request-id"]
         handle_mirror.assert_not_called()
+
+
+def test_upgrade_advertises_request_once(ctx):
+    relation = testing.Relation("cluster", local_unit_data={"hostname": "replacement"})
+    state = ctx.run(ctx.on.upgrade_charm(), testing.State(relations=[relation]))
+    request_data = state.get_relation(relation.id).local_unit_data
+    assert request_data["token-request-id"]
+
+    state = ctx.run(ctx.on.upgrade_charm(), state)
+    assert state.get_relation(relation.id).local_unit_data == request_data
+
+
+def test_bootstrap_with_scoped_request(ctx):
+    relation = testing.Relation(
+        "cluster",
+        remote_app_data={"bootstrap-app": "microovn"},
+        remote_units_data={0: {"mirror": "up"}},
+    )
+    with patch.object(token_lib.TokenConsumer, "_call_cluster_command") as command:
+        command.side_effect = lambda operation, *args: (
+            (0, "") if operation == "bootstrap" else (0, "[]")
+        )
+        state = ctx.run(
+            ctx.on.relation_joined(relation, remote_unit=0),
+            testing.State(leader=True, relations=[relation]),
+        )
+
+    assert state.unit_status == testing.ActiveStatus("Cluster bootstrapped")
+    assert state.get_relation(relation.id).local_unit_data["token-request-id"]
+    command.assert_any_call("bootstrap")
+
+
+def test_remove_uses_real_hostname(ctx):
+    with (
+        patch.object(
+            token_lib.TokenConsumer, "_call_cluster_command", return_value=(0, "")
+        ) as command,
+        ctx(ctx.on.remove(), testing.State()) as manager,
+    ):
+        manager.charm.consumer._stored.in_cluster = True
+        manager.charm.consumer._stored.token_request_id = "request-id"
+        manager.run()
+
+    command.assert_called_once_with("remove", "replacement")
 
 
 @pytest.mark.parametrize("local_token", [None, "unmirrored-token"])
