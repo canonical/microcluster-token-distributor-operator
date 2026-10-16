@@ -172,23 +172,24 @@ Packed microcluster-token-distributor_amd64.charm
 
 ## Testing the locally packed charm
 
-### Coordinating the token-request update
+### Token-request compatibility
 
 The fix for [LP#2170962](https://bugs.launchpad.net/microovn-operator/+bug/2170962)
 is shared with [microovn-operator](https://github.com/canonical/microovn-operator).
-Publish version 0.9 of `charms.microcluster_token_distributor.v0.token_distributor`
+Publish version 0.10 of `charms.microcluster_token_distributor.v0.token_distributor`
 from this repository and release the distributor charm with it. Keep MicroOVN's
 vendored copy identical to the published library.
 
-New consumers advertise a persistent `token-request-id`, and tokens are mirrored
-under `mirror-<hostname>:<request-id>`. The communicator generates the token for
-the real hostname. This keeps replacement units from using consumed tokens still
-cached for a removed unit. Joined legacy units keep their existing requests.
+New consumers advertise `<hostname>:<request-id>` in the existing `hostname`
+field. Old distributors mirror this opaque value unchanged; the communicator
+generates the token for the real hostname. Replacement units therefore avoid
+consumed tokens cached for a removed unit. The request ID persists across hooks.
 
-Upgrade the distributor and all MicroOVN applications sharing it before adding
-replacement units. New requests wait until the distributor and communicator both
-support the scoped keys; they never fall back to possibly consumed hostname-only
-tokens. The distributor reconciles existing requests during its upgrade hook.
+New MicroOVN clusters work with old distributors, and new distributors support
+old MicroOVN clusters using plain hostname keys. All MicroOVN consumers sharing
+a cluster must use a consistent version. No coordinated distributor upgrade is
+required. Joined legacy units keep their existing requests, and patch 9's
+separate request-ID field remains supported for compatibility.
 
 With a Juju controller configured, run MicroOVN's same-hostname regression test
 against local builds of both charms from the MicroOVN repository:

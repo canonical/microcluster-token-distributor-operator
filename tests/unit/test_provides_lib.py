@@ -334,7 +334,8 @@ def test_token_bridged_across_relations():
 
 
 @pytest.mark.parametrize("event_name", ["relation_changed", "upgrade_charm", "leader_elected"])
-def test_replacement_requests_bridged_despite_stale_tokens(event_name):
+@pytest.mark.parametrize("encoding", ["opaque", "separate-id", "both"])
+def test_replacement_requests_bridged_despite_stale_tokens(event_name, encoding):
     """Each incarnation gets a fresh request across relations, even with stale caches."""
     ctx = testing.Context(charm.TokenDistributor)
     stale = {
@@ -356,11 +357,14 @@ def test_replacement_requests_bridged_despite_stale_tokens(event_name):
     for unit_id in (1, 2):
         request_id = f"request-{unit_id}"
         key = f"mirror-replacement:{request_id}"
+        request_data = {
+            "hostname": "replacement" if encoding == "separate-id" else f"replacement:{request_id}"
+        }
+        if encoding != "opaque":
+            request_data["token-request-id"] = request_id
         target = replace(
             target,
-            remote_units_data={
-                unit_id: {"hostname": "replacement", "token-request-id": request_id}
-            },
+            remote_units_data={unit_id: request_data},
         )
         event = (
             ctx.on.relation_changed(target, remote_unit=unit_id)

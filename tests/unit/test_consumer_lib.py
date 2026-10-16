@@ -22,6 +22,34 @@ class ConsumerCharm(ops.CharmBase):
         self.consumer = token_lib.TokenConsumer(self, "cluster", ["microovn", "cluster"])
 
 
+class LegacyMirrorCharm(ops.CharmBase):
+    """Implement the legacy wire contract without understanding request IDs."""
+
+    def __init__(self, framework):
+        super().__init__(framework)
+        self.framework.observe(self.on[CONTROL_RELATION].relation_changed, self._on_changed)
+
+    def _on_changed(self, event):
+        mirrored = {}
+        for relation in self.model.relations[CONTROL_RELATION]:
+            for unit in relation.units:
+                data = relation.data[unit]
+                if hostname := data.get("hostname"):
+                    mirrored.setdefault(f"mirror-{hostname}", "empty")
+                if data.get("mirror") == "up":
+                    mirrored.update(
+                        (key, value)
+                        for key, value in data.items()
+                        if key.startswith("mirror-") and value != "empty"
+                    )
+        for relation in self.model.relations[CONTROL_RELATION]:
+            data = relation.data[self.unit]
+            data["mirror"] = "up"
+            for key, value in mirrored.items():
+                if key not in data or value != "empty":
+                    data[key] = value
+
+
 @pytest.fixture()
 def ctx():
     with patch.object(token_lib, "get_hostname", return_value="replacement"):
@@ -42,7 +70,9 @@ def test_replacements_ignore_cached_tokens(ctx):
                 testing.State(relations=[relation]),
             )
             data = state.get_relation(relation.id).local_unit_data
-            request_id = data["token-request-id"]
+            hostname, _, request_id = data["hostname"].partition(":")
+            assert hostname == "replacement"
+            assert "token-request-id" not in data
             assert request_id and request_id not in requests
             requests.add(request_id)
 
@@ -57,9 +87,16 @@ def test_replacements_ignore_cached_tokens(ctx):
 
 
 @pytest.mark.parametrize("cross_app", [False, True])
-def test_replaced_hostname_gets_fresh_token(ctx, cross_app):
+@pytest.mark.parametrize("legacy_distributor", [False, True])
+def test_replaced_hostname_gets_fresh_token(ctx, cross_app, legacy_distributor):
     """Exercise both sides with stale caches and two replacements of one hostname."""
-    distributor = testing.Context(TokenDistributor)
+    distributor = testing.Context(
+        LegacyMirrorCharm if legacy_distributor else TokenDistributor,
+        meta={
+            "name": "microcluster-token-distributor",
+            "provides": {CONTROL_RELATION: {"interface": "worker-cluster"}},
+        },
+    )
     stale_data = {
         "mirror": "up",
         "mirror-a-voter": "bootstrap-token",
@@ -95,10 +132,12 @@ def test_replaced_hostname_gets_fresh_token(ctx, cross_app):
             )
             run.assert_not_called()
             request_data = joining_state.get_relation(joining_relation.id).local_unit_data
-            request_id = request_data["token-request-id"]
+            request_id = request_data["hostname"].partition(":")[2]
+            assert request_id
+            assert "token-request-id" not in request_data
             assert request_id not in request_ids
             request_ids.append(request_id)
-            key = f"mirror-replacement:{request_id}"
+            key = f"mirror-{request_data['hostname']}"
 
             # Keep stale tokens on both the distributor and the communicator.
             provider_relation = testing.Relation(
@@ -216,7 +255,7 @@ def test_generate_token_for_real_hostname_once(ctx, key):
 def test_join_uses_token_for_current_request(ctx):
     relation = testing.Relation("cluster")
     state = ctx.run(ctx.on.upgrade_charm(), testing.State(relations=[relation]))
-    request_id = state.get_relation(relation.id).local_unit_data["token-request-id"]
+    request = state.get_relation(relation.id).local_unit_data["hostname"]
     relation = replace(
         state.get_relation(relation.id),
         remote_units_data={
@@ -224,7 +263,7 @@ def test_join_uses_token_for_current_request(ctx):
                 "mirror": "up",
                 "mirror-replacement": "consumed-legacy-token",
                 "mirror-replacement:old-request": "consumed-scoped-token",
-                f"mirror-replacement:{request_id}": "fresh-token",
+                f"mirror-{request}": "fresh-token",
             }
         },
     )
@@ -252,7 +291,8 @@ def test_upgrade_advertises_request_only_for_unjoined_legacy_unit(ctx, in_cluste
         assert data == relation.local_unit_data
         handle_mirror.assert_called_once()
     else:
-        assert data["token-request-id"]
+        assert data["hostname"].startswith("replacement:")
+        assert "token-request-id" not in data
         handle_mirror.assert_not_called()
 
 
@@ -260,10 +300,28 @@ def test_upgrade_advertises_request_once(ctx):
     relation = testing.Relation("cluster", local_unit_data={"hostname": "replacement"})
     state = ctx.run(ctx.on.upgrade_charm(), testing.State(relations=[relation]))
     request_data = state.get_relation(relation.id).local_unit_data
-    assert request_data["token-request-id"]
+    assert request_data["hostname"].startswith("replacement:")
 
     state = ctx.run(ctx.on.upgrade_charm(), state)
     assert state.get_relation(relation.id).local_unit_data == request_data
+
+
+@pytest.mark.parametrize("in_cluster", [False, True])
+def test_upgrade_preserves_existing_request_id(ctx, in_cluster):
+    relation = testing.Relation(
+        "cluster",
+        local_unit_data={"hostname": "replacement", "token-request-id": "existing-request"},
+    )
+    with (
+        patch.object(token_lib.TokenConsumer, "_handle_mirror"),
+        ctx(ctx.on.upgrade_charm(), testing.State(relations=[relation])) as manager,
+    ):
+        manager.charm.consumer._stored.in_cluster = in_cluster
+        manager.charm.consumer._stored.token_request_id = "existing-request"
+        state = manager.run()
+    assert state.get_relation(relation.id).local_unit_data == {
+        "hostname": "replacement:existing-request"
+    }
 
 
 def test_bootstrap_with_scoped_request(ctx):
@@ -282,7 +340,7 @@ def test_bootstrap_with_scoped_request(ctx):
         )
 
     assert state.unit_status == testing.ActiveStatus("Cluster bootstrapped")
-    assert state.get_relation(relation.id).local_unit_data["token-request-id"]
+    assert state.get_relation(relation.id).local_unit_data["hostname"].startswith("replacement:")
     command.assert_any_call("bootstrap")
 
 
