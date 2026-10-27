@@ -172,6 +172,36 @@ Packed microcluster-token-distributor_amd64.charm
 
 ## Testing the locally packed charm
 
+### Token-request compatibility
+
+The fix for [LP#2170962](https://bugs.launchpad.net/microovn-operator/+bug/2170962)
+is shared with [microovn-operator](https://github.com/canonical/microovn-operator).
+Publish version 0.10 of `charms.microcluster_token_distributor.v0.token_distributor`
+from this repository and release the distributor charm with it. Keep MicroOVN's
+vendored copy identical to the published library.
+
+New consumers advertise `<hostname>:<request-id>` in the existing `hostname`
+field. Old distributors mirror this opaque value unchanged; the communicator
+generates the token for the real hostname. Replacement units therefore avoid
+consumed tokens cached for a removed unit. The request ID persists across hooks.
+
+New MicroOVN clusters work with old distributors, and new distributors support
+old MicroOVN clusters using plain hostname keys. All MicroOVN consumers sharing
+a cluster must use a consistent version. No coordinated distributor upgrade is
+required. Joined legacy units keep their existing requests, and patch 9's
+separate request-ID field remains supported for compatibility.
+
+With a Juju controller configured, run MicroOVN's same-hostname regression test
+against local builds of both charms from the MicroOVN repository:
+
+```bash
+TOKEN_DISTRIBUTOR_CHARM_PATH=/path/to/microcluster-token-distributor_amd64.charm \
+MICROOVN_CHARM_PATH=/path/to/microovn_ubuntu@24.04-amd64.charm \
+tox -e integration -- tests/integration/test_charm.py::test_readd_same_hostname
+```
+
+### Deploying the charm
+
 To deploy the locally packed charm, run the following command:
 
 ```bash
@@ -184,4 +214,3 @@ environment, simply use the `juju refresh` command:
 ```bash
 juju refresh --path ./microcluster-token-distributor_amd64.charm microcluster-token-distributor
 ```
-
